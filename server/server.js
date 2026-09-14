@@ -17,17 +17,11 @@ try {
   console.error("DB connection failed (Vercel mode):", error.message);
 }
 
-// Middleware
+// JSON + CORS
 app.use(express.json());
 app.use(cors());
-app.use(clerkMiddleware());
 
-// API Routes
-app.get("/", (req, res) => {
-  res.send("Server is Live!");
-});
-
-// Inngest endpoint
+// Inngest endpoint – must be before Clerk
 app.use(
   "/api/inngest",
   serve({
@@ -35,6 +29,14 @@ app.use(
     functions,
   })
 );
+
+// Clerk (after Inngest)
+app.use(clerkMiddleware());
+
+// API Routes
+app.get("/", (req, res) => {
+  res.send("Server is Live!");
+});
 
 if (!isVercel) {
   app.listen(port, () => {
