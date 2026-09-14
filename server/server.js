@@ -8,9 +8,14 @@ import { serve } from "inngest/express";
 
 const app = express();
 const port = process.env.PORT || 3000;
+const isVercel = !!process.env.VERCEL;
 
-// Connect database
-await connectDB();
+try {
+  await connectDB();
+} catch (error) {
+  if (!isVercel) throw error;
+  console.error("DB connection failed (Vercel mode):", error.message);
+}
 
 // Middleware
 app.use(express.json());
@@ -31,6 +36,10 @@ app.use(
   })
 );
 
-app.listen(port, () => {
-  console.log(`Server listening at http://localhost:${port}`);
-});
+if (!isVercel) {
+  app.listen(port, () => {
+    console.log(`Server listening at http://localhost:${port}`);
+  });
+}
+
+export default app;
