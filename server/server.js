@@ -21,6 +21,11 @@ try {
 app.use(express.json());
 app.use(cors());
 
+// Public probe route – before Inngest and Clerk
+app.get("/api/test-public", (req, res) => {
+  res.json({ message: "test-public OK", clerkProtected: false });
+});
+
 // Inngest endpoint – must be before Clerk
 app.use(
   "/api/inngest",
