@@ -8,13 +8,16 @@ const Navbar = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
 
-  const { user } = useUser();
-  const { openSignIn } = useClerk();
+  // Clerk
+  const { user, isLoaded } = useUser();
+  const { openSignIn, openUserProfile } = useClerk();
 
   useEffect(() => {
     const handleScroll = () => {
       setScrolled(window.scrollY > 30);
     };
+
+    handleScroll();
 
     window.addEventListener("scroll", handleScroll);
 
@@ -32,6 +35,16 @@ const Navbar = () => {
     });
   };
 
+  const handleLogin = () => {
+    setIsOpen(false);
+    openSignIn();
+  };
+
+  const handleProfile = () => {
+    setIsOpen(false);
+    openUserProfile();
+  };
+
   const navLinks = [
     { name: "Home", path: "/" },
     { name: "Movies", path: "/movies" },
@@ -45,7 +58,9 @@ const Navbar = () => {
       {/* Mobile Overlay */}
       <div
         className={`fixed inset-0 bg-black/60 backdrop-blur-sm z-40 md:hidden transition-all duration-300 ${
-          isOpen ? "opacity-100 visible" : "opacity-0 invisible"
+          isOpen
+            ? "opacity-100 visible"
+            : "opacity-0 invisible pointer-events-none"
         }`}
         onClick={() => setIsOpen(false)}
       />
@@ -64,7 +79,7 @@ const Navbar = () => {
             <Link to="/" className="max-md:flex-1">
               <img
                 src={assets.logo}
-                alt="Logo"
+                alt="QuickShow Logo"
                 className="w-32 sm:w-36 h-auto"
               />
             </Link>
@@ -88,30 +103,44 @@ const Navbar = () => {
 
             {/* Right Side */}
             <div className="flex items-center gap-4 md:gap-6">
+              {/* Search */}
               <button
+                type="button"
                 className="hidden md:flex items-center justify-center w-10 h-10 rounded-full hover:bg-white/10 transition"
                 aria-label="Search"
               >
                 <SearchIcon className="w-5 h-5" />
               </button>
 
-              {user ? (
-                <button className="hidden sm:block px-5 py-2 bg-primary hover:bg-primary-dull transition-all duration-300 rounded-full font-medium text-white">
-                  Profile
-                </button>
-              ) : (
-                <button
-                  onClick={() => openSignIn()}
-                  className="hidden sm:block px-5 py-2 bg-primary hover:bg-primary-dull transition-all duration-300 rounded-full font-medium text-white"
-                >
-                  Login
-                </button>
-              )}
+              {/* Authentication */}
+              {isLoaded &&
+                (user ? (
+                  <button
+                    type="button"
+                    onClick={handleProfile}
+                    className="hidden sm:block px-5 py-2 bg-primary hover:bg-primary-dull transition-all duration-300 rounded-full font-medium text-white"
+                  >
+                    Profile
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleLogin}
+                    className="hidden sm:block px-5 py-2 bg-primary hover:bg-primary-dull transition-all duration-300 rounded-full font-medium text-white"
+                  >
+                    Login
+                  </button>
+                ))}
 
-              <MenuIcon
-                className="md:hidden w-8 h-8 cursor-pointer"
+              {/* Mobile Menu Button */}
+              <button
+                type="button"
+                className="md:hidden"
                 onClick={() => setIsOpen(true)}
-              />
+                aria-label="Open menu"
+              >
+                <MenuIcon className="w-8 h-8 cursor-pointer" />
+              </button>
             </div>
           </div>
         </div>
@@ -123,11 +152,17 @@ const Navbar = () => {
           isOpen ? "w-full" : "w-0"
         }`}
       >
-        <XIcon
-          className="absolute top-6 right-6 w-7 h-7 cursor-pointer"
+        {/* Close Button */}
+        <button
+          type="button"
+          className="absolute top-6 right-6"
           onClick={() => setIsOpen(false)}
-        />
+          aria-label="Close menu"
+        >
+          <XIcon className="w-7 h-7 cursor-pointer" />
+        </button>
 
+        {/* Mobile Navigation */}
         {navLinks.map((link) => (
           <NavLink
             key={link.name}
@@ -143,20 +178,25 @@ const Navbar = () => {
           </NavLink>
         ))}
 
-        {!user && (
-          <button
-            onClick={() => openSignIn()}
-            className="mt-4 px-8 py-3 bg-primary hover:bg-primary-dull transition rounded-full font-medium text-white"
-          >
-            Login
-          </button>
-        )}
-
-        {user && (
-          <button className="mt-4 px-8 py-3 bg-primary hover:bg-primary-dull transition rounded-full font-medium text-white">
-            Profile
-          </button>
-        )}
+        {/* Mobile Authentication */}
+        {isLoaded &&
+          (user ? (
+            <button
+              type="button"
+              onClick={handleProfile}
+              className="mt-4 px-8 py-3 bg-primary hover:bg-primary-dull transition rounded-full font-medium text-white"
+            >
+              Profile
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleLogin}
+              className="mt-4 px-8 py-3 bg-primary hover:bg-primary-dull transition rounded-full font-medium text-white"
+            >
+              Login
+            </button>
+          ))}
       </div>
     </>
   );
