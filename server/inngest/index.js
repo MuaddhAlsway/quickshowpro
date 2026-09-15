@@ -1,12 +1,17 @@
 import User from "../models/User.js";
+import connectDB from "../configs/db.js";
 import { Inngest } from "inngest";
 
-// Create Inngest client
 export const inngest = new Inngest({
   id: "movie-ticket-booking",
 });
 
-// Create user
+
+// ======================================================
+// CREATE USER
+// Clerk → Inngest → MongoDB
+// ======================================================
+
 const syncUserCreation = inngest.createFunction(
   {
     id: "sync-user-from-clerk",
@@ -16,7 +21,11 @@ const syncUserCreation = inngest.createFunction(
       },
     ],
   },
+
   async ({ event }) => {
+    // Make sure MongoDB is connected
+    await connectDB();
+
     const {
       id,
       first_name,
@@ -38,16 +47,31 @@ const syncUserCreation = inngest.createFunction(
       image: image_url ?? "",
     };
 
-    await User.create(userData);
+    // Upsert makes retries safer.
+    // If Inngest retries the event, we won't get duplicate _id errors.
+    const user = await User.findByIdAndUpdate(
+      id,
+      userData,
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+      }
+    );
 
     return {
       success: true,
-      userId: id,
+      userId: user._id,
     };
   }
 );
 
-// Delete user
+
+// ======================================================
+// DELETE USER
+// Clerk → Inngest → MongoDB
+// ======================================================
+
 const syncUserDeletion = inngest.createFunction(
   {
     id: "delete-user-with-clerk",
@@ -57,19 +81,33 @@ const syncUserDeletion = inngest.createFunction(
       },
     ],
   },
+
   async ({ event }) => {
+    // Make sure MongoDB is connected
+    await connectDB();
+
     const { id } = event.data;
 
-    await User.findByIdAndDelete(id);
+    if (!id) {
+      throw new Error("Clerk delete event has no user ID");
+    }
+
+    const deletedUser = await User.findByIdAndDelete(id);
 
     return {
       success: true,
       userId: id,
+      deleted: Boolean(deletedUser),
     };
   }
 );
 
-// Update user
+
+// ======================================================
+// UPDATE USER
+// Clerk → Inngest → MongoDB
+// ======================================================
+
 const syncUserUpdation = inngest.createFunction(
   {
     id: "update-user-from-clerk",
@@ -79,7 +117,11 @@ const syncUserUpdation = inngest.createFunction(
       },
     ],
   },
+
   async ({ event }) => {
+    // Make sure MongoDB is connected
+    await connectDB();
+
     const {
       id,
       first_name,
@@ -100,16 +142,27 @@ const syncUserUpdation = inngest.createFunction(
       image: image_url ?? "",
     };
 
-    await User.findByIdAndUpdate(id, userData, {
-      new: true,
-    });
+    const updatedUser = await User.findByIdAndUpdate(
+      id,
+      userData,
+      {
+        new: true,
+        upsert: true,
+        runValidators: true,
+      }
+    );
 
     return {
       success: true,
-      userId: id,
+      userId: updatedUser._id,
     };
   }
 );
+
+
+// ======================================================
+// EXPORT FUNCTIONS
+// ======================================================
 
 export const functions = [
   syncUserCreation,
