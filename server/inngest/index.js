@@ -21,18 +21,29 @@ const syncUserCreation = inngest.createFunction(
       id,
       first_name,
       last_name,
-      email_addresses,
+      email_addresses = [],
       image_url,
     } = event.data;
 
+    const email = email_addresses[0]?.email_address;
+
+    if (!email) {
+      throw new Error(`Clerk user ${id} has no email address`);
+    }
+
     const userData = {
       _id: id,
-      email: email_addresses[0].email_address,
-      name: `${first_name} ${last_name}`,
-      image: image_url,
+      email,
+      name: `${first_name ?? ""} ${last_name ?? ""}`.trim(),
+      image: image_url ?? "",
     };
 
     await User.create(userData);
+
+    return {
+      success: true,
+      userId: id,
+    };
   }
 );
 
@@ -50,6 +61,11 @@ const syncUserDeletion = inngest.createFunction(
     const { id } = event.data;
 
     await User.findByIdAndDelete(id);
+
+    return {
+      success: true,
+      userId: id,
+    };
   }
 );
 
@@ -68,19 +84,30 @@ const syncUserUpdation = inngest.createFunction(
       id,
       first_name,
       last_name,
-      email_addresses,
+      email_addresses = [],
       image_url,
     } = event.data;
 
+    const email = email_addresses[0]?.email_address;
+
+    if (!email) {
+      throw new Error(`Clerk user ${id} has no email address`);
+    }
+
     const userData = {
-      email: email_addresses[0].email_address,
-      name: `${first_name} ${last_name}`,
-      image: image_url,
+      email,
+      name: `${first_name ?? ""} ${last_name ?? ""}`.trim(),
+      image: image_url ?? "",
     };
 
     await User.findByIdAndUpdate(id, userData, {
       new: true,
     });
+
+    return {
+      success: true,
+      userId: id,
+    };
   }
 );
 
