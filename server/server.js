@@ -1,32 +1,73 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+
 import connectDB from "./configs/db.js";
+
 import { clerkMiddleware } from "@clerk/express";
+
 import { functions, inngest } from "./inngest/index.js";
 import { serve } from "inngest/express";
 
+import showRouter from "./routes/showRoutes.js";
+import bookingRouter from "./routes/bookingRoutes.js";
+import adminRouter from "./routes/adminRouter.js";
+import userRouter from "./routes/userRoutes.js";
+import { stripeWebhooks } from "./Controller/stripeWebhook.js";
+
 const app = express();
+
 const port = process.env.PORT || 3000;
+
+// Stripe Webhooks Route
+app.use('/api/stripe', express.raw({type: 'application/json'}), stripeWebhooks)
 const isVercel = !!process.env.VERCEL;
+
+
+// ======================================================
+// DATABASE
+// ======================================================
 
 try {
   await connectDB();
 } catch (error) {
-  if (!isVercel) throw error;
-  console.error("DB connection failed (Vercel mode):", error.message);
+  if (!isVercel) {
+    throw error;
+  }
+
+  console.error(
+    "DB connection failed (Vercel mode):",
+    error.message
+  );
 }
 
-// JSON + CORS
+
+// ======================================================
+// GLOBAL MIDDLEWARE
+// ======================================================
+
 app.use(express.json());
+
 app.use(cors());
 
-// Public probe route – before Inngest and Clerk
+
+// ======================================================
+// PUBLIC TEST ROUTE
+// ======================================================
+
 app.get("/api/test-public", (req, res) => {
-  res.json({ message: "test-public OK", clerkProtected: false });
+  res.json({
+    message: "test-public OK",
+    clerkProtected: false,
+  });
 });
 
-// Inngest endpoint – must be before Clerk
+
+// ======================================================
+// INNGEST
+// Keep before Clerk middleware
+// ======================================================
+
 app.use(
   "/api/inngest",
   serve({
@@ -35,18 +76,51 @@ app.use(
   })
 );
 
-// Clerk (after Inngest)
+
+// ======================================================
+// CLERK
+// ======================================================
+
 app.use(clerkMiddleware());
 
-// API Routes
+
+// ======================================================
+// ROOT
+// ======================================================
+
 app.get("/", (req, res) => {
   res.send("Server is Live!");
 });
 
+
+// ======================================================
+// API ROUTES
+// ======================================================
+
+app.use("/api/show", showRouter);
+
+app.use("/api/booking", bookingRouter);
+
+app.use("/api/admin", adminRouter);
+
+app.use("/api/user", userRouter);
+
+
+// ======================================================
+// LOCAL SERVER
+// ======================================================
+
 if (!isVercel) {
   app.listen(port, () => {
-    console.log(`Server listening at http://localhost:${port}`);
+    console.log(
+      `Server listening at http://localhost:${port}`
+    );
   });
 }
+
+
+// ======================================================
+// VERCEL EXPORT
+// ======================================================
 
 export default app;
