@@ -34,15 +34,33 @@ const sendEmail = async ({ to, subject, body }) => {
     );
   }
 
-  const response = await transporter.sendMail({
-    from: process.env.SENDER_EMAIL,
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    throw new Error(
+      "SMTP_USER and SMTP_PASS are required"
+    );
+  }
 
-    to,
+  let response;
 
-    subject,
+  try {
+    response = await transporter.sendMail({
+      from: process.env.SENDER_EMAIL,
 
-    html: body,
-  });
+      to,
+
+      subject,
+
+      html: body,
+    });
+
+  } catch (error) {
+    console.error(
+      "EMAIL SEND FAILED:",
+      error.message
+    );
+
+    throw error;
+  }
 
   console.log(
     "EMAIL SENT:",
