@@ -38,6 +38,13 @@ The React application lets customers browse movies, inspect showtimes, reserve s
 
 The Express API coordinates Clerk authentication, MongoDB persistence, TMDB movie data, Stripe payment events, Inngest workflows, and transactional email through Brevo SMTP.
 
+## 🌐 Live Deployment
+
+| 🚀 Service | 🔗 Production URL |
+|---|---|
+| 🎬 Customer application | [quickshowprofront.vercel.app](https://quickshowprofront.vercel.app/) |
+| ⚙️ Express API | [quickshowpro.vercel.app](https://quickshowpro.vercel.app/) |
+
 ## ✨ Features
 
 ### 🎟️ Customer Experience
