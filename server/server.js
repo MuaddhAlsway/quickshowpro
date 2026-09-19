@@ -1,10 +1,23 @@
+
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
 
+// ======================================================
+// DATABASE
+// ======================================================
+
 import connectDB from "./configs/db.js";
 
+// ======================================================
+// CLERK
+// ======================================================
+
 import { clerkMiddleware } from "@clerk/express";
+
+// ======================================================
+// INNGEST
+// ======================================================
 
 import {
   functions,
@@ -13,87 +26,117 @@ import {
 
 import { serve } from "inngest/express";
 
+// ======================================================
+// ROUTES
+// ======================================================
+
 import showRouter from "./routes/showRoutes.js";
 import bookingRouter from "./routes/bookingRoutes.js";
 import adminRouter from "./routes/adminRouter.js";
 import userRouter from "./routes/userRoutes.js";
 
+// ======================================================
+// STRIPE WEBHOOK
+// ======================================================
+
 import {
   stripeWebhooks,
 } from "./Controller/stripeWebhook.js";
 
+// ======================================================
+// EXPRESS APPLICATION
+// ======================================================
 
 const app = express();
 
-const port =
-  process.env.PORT || 3000;
+const port = process.env.PORT || 3000;
 
-const isVercel =
-  !!process.env.VERCEL;
-
+const isVercel = Boolean(process.env.VERCEL);
 
 // ======================================================
-// STRIPE WEBHOOK
+// 1. STRIPE WEBHOOK
 //
 // IMPORTANT:
-// Must be BEFORE express.json()
 //
-// Stripe signature verification requires
-// the original RAW request body.
+// Stripe must receive the original raw request body
+// for signature verification.
+//
+// Register this route BEFORE express.json().
+//
+// Stripe
+//    ↓
+// POST /api/stripe
+//    ↓
+// Verify signature
+//    ↓
+// Update booking.isPaid
+//    ↓
+// Trigger Inngest booking confirmation email
 // ======================================================
 
 app.post(
   "/api/stripe",
+
   express.raw({
     type: "application/json",
   }),
+
   stripeWebhooks
 );
 
-
 // ======================================================
-// DATABASE
+// 2. DATABASE CONNECTION
+//
+// Connect MongoDB before starting the application.
 // ======================================================
 
 try {
-
   await connectDB();
 
+  console.log(
+    "MongoDB connected successfully"
+  );
 } catch (error) {
-
-  if (!isVercel) {
-    throw error;
-  }
-
   console.error(
-    "DB connection failed (Vercel mode):",
+    "MongoDB connection failed:",
     error.message
   );
+
+  throw error;
 }
 
+// ======================================================
+// 3. GLOBAL MIDDLEWARE
+// ======================================================
 
-// ======================================================
-// GLOBAL MIDDLEWARE
-// ======================================================
+// Parse JSON requests for normal API routes.
 
 app.use(
   express.json()
 );
 
+// Enable CORS for the frontend.
+
 app.use(
   cors()
 );
 
-
 // ======================================================
-// PUBLIC TEST ROUTE
+// 4. PUBLIC TEST ROUTE
+//
+// GET /api/test-public
+//
+// Used to verify that the Express backend
+// is reachable without Clerk authentication.
 // ======================================================
 
 app.get(
   "/api/test-public",
-  (req, res) => {
 
-    res.json({
+  (req, res) => {
+    return res.json({
+      success: true,
+
       message:
         "test-public OK",
 
@@ -103,82 +146,133 @@ app.get(
   }
 );
 
-
 // ======================================================
-// INNGEST
+// 5. INNGEST
+//
+// Endpoint:
+//
+// /api/inngest
+//
+// Registered functions:
+//
+// 1. syncUserCreation
+// 2. syncUserDeletion
+// 3. syncUserUpdation
+// 4. releaseSeatsAndDeleteBooking
+// 5. sendBookingConfirmationEmail
+//
+// All five functions must be exported from:
+//
+// ./inngest/index.js
 // ======================================================
 
 app.use(
   "/api/inngest",
 
   serve({
-    client:
-      inngest,
+    client: inngest,
 
     functions,
   })
 );
 
-
 // ======================================================
-// CLERK
+// 6. CLERK AUTHENTICATION
+//
+// Clerk middleware runs after the public
+// Stripe and Inngest endpoints.
+//
+// Individual protected routes should still use
+// their appropriate authentication middleware.
 // ======================================================
 
 app.use(
   clerkMiddleware()
 );
 
-
 // ======================================================
-// ROOT
+// 7. ROOT ROUTE
+//
+// GET /
 // ======================================================
 
 app.get(
   "/",
-  (req, res) => {
 
-    res.send(
+  (req, res) => {
+    return res.send(
       "Server is Live!"
     );
   }
 );
 
-
 // ======================================================
-// API ROUTES
+// 8. SHOW ROUTES
+//
+// /api/show
 // ======================================================
 
 app.use(
   "/api/show",
+
   showRouter
 );
 
+// ======================================================
+// 9. BOOKING ROUTES
+//
+// /api/booking
+// ======================================================
+
 app.use(
   "/api/booking",
+
   bookingRouter
 );
 
+// ======================================================
+// 10. ADMIN ROUTES
+//
+// /api/admin
+// ======================================================
+
 app.use(
   "/api/admin",
+
   adminRouter
 );
 
+// ======================================================
+// 11. USER ROUTES
+//
+// /api/user
+// ======================================================
+
 app.use(
   "/api/user",
+
   userRouter
 );
 
-
 // ======================================================
-// LOCAL SERVER
+// 12. LOCAL DEVELOPMENT SERVER
+//
+// On Vercel:
+//
+// Export the Express application.
+// Do not call app.listen().
+//
+// Locally:
+//
+// Start Express on port 3000,
+// unless PORT is configured.
 // ======================================================
 
 if (!isVercel) {
-
   app.listen(
     port,
-    () => {
 
+    () => {
       console.log(
         `Server listening at http://localhost:${port}`
       );
@@ -186,9 +280,8 @@ if (!isVercel) {
   );
 }
 
-
 // ======================================================
-// VERCEL EXPORT
+// 13. VERCEL EXPORT
 // ======================================================
 
 export default app;
