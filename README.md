@@ -6,7 +6,7 @@
 
 <br />
 
-<img src="./assets/quickshow-hero.png" alt="QuickShow Pro full-stack movie ticket booking platform" width="100%" />
+<img src="./client/src/assets/quickshow-hero.png" alt="QuickShow Pro full-stack movie ticket booking platform" width="100%" />
 
 # 🎬 QuickShow Pro
 
