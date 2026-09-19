@@ -72,17 +72,27 @@ The Express API coordinates Clerk authentication, MongoDB persistence, TMDB movi
 - 🪑 Automatic release of seats from expired unpaid bookings.
 - 🔁 Idempotent payment and email workflows.
 
-### 📧 Background Jobs and Email
+📧 Background Jobs and Email
 
-- 🔄 Synchronize Clerk user creation, updates, and deletion with MongoDB.
-- 📨 Send confirmation email after verified payment.
-- ⏰ Schedule reminders 24 hours and 2 hours before showtime.
-- 🔁 Retry pending confirmation emails using an Inngest cron function.
-- 🧯 Skip invalid reminders for cancelled, expired, unpaid, missing, or started shows.
-- ✉️ Send transactional messages with Nodemailer and Brevo SMTP.
+🔄 Synchronize Clerk user creation, updates, and deletion with MongoDB.
 
-## 🧰 Technology Stack
+📨 Send confirmation email after verified payment.
 
+⏰ Schedule reminders 24 hours and 2 hours before showtime.
+
+🔁 Retry pending confirmation emails using an Inngest cron function.
+
+🧯 Skip invalid reminders for cancelled, expired, unpaid, missing, or started shows.
+
+✉️ Send transactional messages with Nodemailer and Brevo SMTP.
+
+🧰 Technology Stack
+
+<div align="center">
+
+<img src="./client/src/assets/quickshow-tech-stack.png" alt="QuickShow Pro technology stack: React, Vite, Tailwind CSS, Node.js, Express, MongoDB, Stripe, Clerk, Inngest, TMDB, Brevo, and Vercel" width="100%" />
+
+</div>
 <div align="center">
 
 <!-- SVG technology icons -->
