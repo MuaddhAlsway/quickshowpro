@@ -58,20 +58,10 @@ const isVercel = Boolean(process.env.VERCEL);
 //
 // IMPORTANT:
 //
-// Stripe must receive the original raw request body
-// for signature verification.
+// Stripe signature verification requires the
+// original raw request body.
 //
-// Register this route BEFORE express.json().
-//
-// Stripe
-//    ↓
-// POST /api/stripe
-//    ↓
-// Verify signature
-//    ↓
-// Update booking.isPaid
-//    ↓
-// Trigger Inngest booking confirmation email
+// This route MUST be registered before express.json().
 // ======================================================
 
 app.post(
@@ -87,7 +77,15 @@ app.post(
 // ======================================================
 // 2. DATABASE CONNECTION
 //
-// Connect MongoDB before starting the application.
+// Local development:
+// Throw the error if MongoDB fails to connect.
+//
+// Vercel:
+// Log the error without crashing Express during
+// initialization.
+//
+// Database-dependent requests may still fail if
+// MongoDB remains unavailable.
 // ======================================================
 
 try {
@@ -96,26 +94,25 @@ try {
   console.log(
     "MongoDB connected successfully"
   );
+
 } catch (error) {
   console.error(
     "MongoDB connection failed:",
     error.message
   );
 
-  throw error;
+  if (!isVercel) {
+    throw error;
+  }
 }
 
 // ======================================================
 // 3. GLOBAL MIDDLEWARE
 // ======================================================
 
-// Parse JSON requests for normal API routes.
-
 app.use(
   express.json()
 );
-
-// Enable CORS for the frontend.
 
 app.use(
   cors()
@@ -125,9 +122,6 @@ app.use(
 // 4. PUBLIC TEST ROUTE
 //
 // GET /api/test-public
-//
-// Used to verify that the Express backend
-// is reachable without Clerk authentication.
 // ======================================================
 
 app.get(
@@ -137,11 +131,9 @@ app.get(
     return res.json({
       success: true,
 
-      message:
-        "test-public OK",
+      message: "test-public OK",
 
-      clerkProtected:
-        false,
+      clerkProtected: false,
     });
   }
 );
@@ -153,17 +145,17 @@ app.get(
 //
 // /api/inngest
 //
-// Registered functions:
-//
-// 1. syncUserCreation
-// 2. syncUserDeletion
-// 3. syncUserUpdation
-// 4. releaseSeatsAndDeleteBooking
-// 5. sendBookingConfirmationEmail
-//
-// All five functions must be exported from:
+// Functions are imported from:
 //
 // ./inngest/index.js
+//
+// Expected functions:
+//
+// 1. sync-user-from-clerk
+// 2. delete-user-with-clerk
+// 3. update-user-from-clerk
+// 4. release-seats-delete-booking
+// 5. send-booking-confirmation-email
 // ======================================================
 
 app.use(
@@ -177,13 +169,13 @@ app.use(
 );
 
 // ======================================================
-// 6. CLERK AUTHENTICATION
+// 6. CLERK MIDDLEWARE
 //
-// Clerk middleware runs after the public
-// Stripe and Inngest endpoints.
+// Stripe and Inngest endpoints are registered before
+// Clerk middleware.
 //
-// Individual protected routes should still use
-// their appropriate authentication middleware.
+// Protected API routes should use their appropriate
+// authentication and authorization middleware.
 // ======================================================
 
 app.use(
@@ -257,15 +249,11 @@ app.use(
 // ======================================================
 // 12. LOCAL DEVELOPMENT SERVER
 //
-// On Vercel:
-//
+// Vercel:
 // Export the Express application.
-// Do not call app.listen().
 //
-// Locally:
-//
-// Start Express on port 3000,
-// unless PORT is configured.
+// Local development:
+// Start the HTTP server.
 // ======================================================
 
 if (!isVercel) {
