@@ -44,7 +44,7 @@ The Express API coordinates Clerk authentication, MongoDB persistence, TMDB movi
 |---|---|
 | 🎬 Customer application | [quickshowprofront.vercel.app](https://quickshowprofront.vercel.app/) |
 | ⚙️ Express API | [quickshowpro.vercel.app](https://quickshowpro.vercel.app/) |
-
+| 📚 Project documentation | [Open the complete Notion project page](https://app.notion.com/p/GreatStack-Movie-Ticket-Booking-Platform-3d0e97a262dc81dfb1b3fc98f9e46ebc?source=copy_link) |
 ## ✨ Features
 
 ### 🎟️ Customer Experience
