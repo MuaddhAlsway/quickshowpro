@@ -1,23 +1,34 @@
-import Stripe from "stripe";
-
 import Booking from "../models/Booking.js";
 
 import connectDB from "../configs/db.js";
 
-import { inngest } from "../inngest/index.js";
+import {
+  getStripe,
+  reconcileBookingFromSession,
+} from "../utils/paymentSync.js";
 
 // ======================================================
 // STRIPE WEBHOOK
+//
+// Handles:
+//
+//   1. checkout.session.completed
+//   2. checkout.session.async_payment_succeeded
+//
+// A booking is never marked paid until Stripe confirms
+// payment (payment_status === "paid" AND the session is
+// "complete"). Metadata, amount and currency are verified
+// by reconcileBookingFromSession before the write.
+//
+// The endpoint is registered BEFORE express.json() so the
+// raw request body is available for signature verification.
 // ======================================================
 
 export const stripeWebhooks = async (
   request,
   response
 ) => {
-  const stripeInstance =
-    new Stripe(
-      process.env.STRIPE_SECRET_KEY
-    );
+  const stripeInstance = getStripe();
 
   const signature =
     request.headers[
@@ -43,7 +54,8 @@ export const stripeWebhooks = async (
   } catch (error) {
     console.error(
       "STRIPE WEBHOOK SIGNATURE ERROR:",
-      error.message
+      error.message,
+      { eventId: event?.id || null }
     );
 
     return response
@@ -62,104 +74,120 @@ export const stripeWebhooks = async (
 
     console.log(
       "STRIPE EVENT:",
-      event.type
+      event.type,
+      event.id
     );
 
-    switch (event.type) {
-      case "checkout.session.completed": {
-        const session =
-          event.data.object;
+    const isPaymentConfirmedEvent =
+      event.type ===
+        "checkout.session.completed" ||
+      event.type ===
+        "checkout.session.async_payment_succeeded";
 
-        const bookingId =
-          session.metadata
-            ?.bookingId;
+    if (!isPaymentConfirmedEvent) {
+      console.log(
+        "UNHANDLED STRIPE EVENT:",
+        event.type
+      );
 
-        if (!bookingId) {
-          console.error(
-            "BOOKING ID MISSING"
-          );
+      return response.json({
+        received: true,
+      });
+    }
 
-          break;
+    const session = event.data.object;
+
+    // ==================================================
+    // 2a. BOOKING ID
+    // ==================================================
+
+    const bookingId =
+      session.metadata?.bookingId;
+
+    if (!bookingId) {
+      console.error(
+        "STRIPE WEBHOOK: BOOKING ID MISSING",
+        { eventId: event.id, sessionId: session.id }
+      );
+
+      return response.json({
+        received: true,
+      });
+    }
+
+    // ==================================================
+    // 2b. ONLY CONFIRMED PAYMENTS
+    //
+    // checkout.session.completed can fire before async
+    // payment methods settle. Wait for the paid signal.
+    // ==================================================
+
+    if (
+      session.status !== "complete" ||
+      session.payment_status !== "paid"
+    ) {
+      console.log(
+        "STRIPE WEBHOOK: PAYMENT NOT CONFIRMED YET",
+        {
+          sessionId: session.id,
+          status: session.status,
+          payment_status:
+            session.payment_status,
         }
+      );
 
-        // Only confirm successful payments.
+      return response.json({
+        received: true,
+      });
+    }
 
-        if (
-          session.payment_status !==
-          "paid"
-        ) {
-          console.log(
-            "PAYMENT NOT YET PAID:",
-            bookingId
-          );
+    // ==================================================
+    // 2c. RECONCILE BOOKING
+    // ==================================================
 
-          break;
-        }
+    const result =
+      await reconcileBookingFromSession(
+        bookingId,
+        session,
+        { emitEmail: true }
+      );
 
-        // ==============================================
-        // MARK BOOKING AS PAID
-        // ==============================================
-
-        const booking =
-          await Booking.findOneAndUpdate(
-            {
-              _id: bookingId,
-              isPaid: false,
-            },
-
-            {
-              $set: {
-                isPaid: true,
-                paymentLink: "",
-              },
-            },
-
-            {
-              new: true,
-            }
-          );
-
-        if (!booking) {
-          console.log(
-            "BOOKING NOT FOUND OR ALREADY PAID:",
-            bookingId
-          );
-
-          break;
-        }
-
+    switch (result.status) {
+      case "paid":
         console.log(
-          "BOOKING MARKED AS PAID:",
+          "STRIPE WEBHOOK: BOOKING MARKED PAID:",
           bookingId
         );
-
-        // ==============================================
-        // TRIGGER CONFIRMATION EMAIL
-        // ==============================================
-
-        await inngest.send({
-          name: "app/show.booked",
-
-          data: {
-            bookingId:
-              booking._id.toString(),
-          },
-        });
-
-        console.log(
-          "CONFIRMATION EMAIL EVENT SENT:",
-          bookingId
-        );
-
         break;
-      }
 
-      default: {
+      case "already-paid":
         console.log(
-          "UNHANDLED STRIPE EVENT:",
-          event.type
+          "STRIPE WEBHOOK: BOOKING ALREADY PAID:",
+          bookingId
         );
-      }
+        break;
+
+      case "rejected":
+        console.error(
+          "STRIPE WEBHOOK: PAYMENT VERIFICATION REJECTED:",
+          bookingId,
+          result.verdict?.reason
+        );
+        break;
+
+      case "missing":
+        console.error(
+          "STRIPE WEBHOOK: BOOKING NOT FOUND:",
+          bookingId
+        );
+        break;
+
+      default:
+        console.log(
+          "STRIPE WEBHOOK: BOOKING NOT UPDATED:",
+          bookingId,
+          result.verdict?.reason
+        );
     }
 
     return response.json({
@@ -168,8 +196,9 @@ export const stripeWebhooks = async (
 
   } catch (error) {
     console.error(
-      "STRIPE WEBHOOK ERROR:",
-      error
+      "STRIPE WEBHOOK PROCESSING ERROR:",
+      error.message,
+      error.stack
     );
 
     return response

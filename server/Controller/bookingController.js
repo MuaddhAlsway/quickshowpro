@@ -419,6 +419,15 @@ export const createBooking = async (
     booking.paymentLink =
       session.url;
 
+    booking.paymentStatus =
+      "PENDING";
+
+    booking.stripeSessionId =
+      session.id;
+
+    booking.stripeSessionExpiresAt =
+      session.expires_at ?? null;
+
     await booking.save();
 
     console.log(

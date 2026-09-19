@@ -156,6 +156,7 @@ app.get(
 // 3. update-user-from-clerk
 // 4. release-seats-delete-booking
 // 5. send-booking-confirmation-email
+// 6. retry-pending-confirmation-emails
 // ======================================================
 
 app.use(

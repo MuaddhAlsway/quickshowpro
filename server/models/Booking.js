@@ -7,6 +7,10 @@ const bookingSchema = new mongoose.Schema({
     bookedSeats: {type:Array, required:false},
     isPaid: {type:Boolean, default:false},
     paymentLink: {type:String},
+    paymentStatus: {type:String, enum:["PENDING", "PAID", "EXPIRED", "CANCELLED"], default:"PENDING"},
+    stripeSessionId: {type:String},
+    stripeSessionExpiresAt: {type:Number},
+    paidAt: {type:Date},
 
 }, {timestamps: true});
 

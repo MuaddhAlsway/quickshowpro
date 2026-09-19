@@ -1,19 +1,21 @@
 import User from "../models/User.js";
 import Booking from "../models/Booking.js";
 import Show from "../models/Show.js";
+import EmailEvent from "../models/EmailEvent.js";
 
 import connectDB from "../configs/db.js";
 import sendEmail from "../configs/nodemailer.js";
+import { inngest } from "../configs/inngest.js";
 
-import { Inngest } from "inngest";
+import {
+  claimConfirmationEmail,
+  completeConfirmationEmail,
+  getSessionIdForBooking,
+  getStripe,
+  reconcileBookingFromSession,
+} from "../utils/paymentSync.js";
 
-// ======================================================
-// INNGEST CLIENT
-// ======================================================
-
-export const inngest = new Inngest({
-  id: "movie-ticket-booking",
-});
+export { inngest };
 
 // ======================================================
 // HELPER: ESCAPE HTML
@@ -212,12 +214,29 @@ const syncUserUpdation = inngest.createFunction(
 // ======================================================
 // 4. RELEASE SEATS AND DELETE UNPAID BOOKING
 //
-// This is the basic course implementation.
-// Stripe Checkout expires after 30 minutes.
-// Inngest checks the booking after 31 minutes.
+// Previously this job deleted an unpaid booking after a
+// fixed 31 minutes. That is unsafe because:
 //
-// The extra minute gives the Stripe webhook
-// some time to update the booking.
+//   - Stripe confirms payment asynchronously for some
+//     payment methods
+//   - the webhook can race with the cleanup job
+//   - Checkout Sessions may expire later than Stripe's
+//     minimum 30 minutes
+//
+// New behaviour:
+//
+//   1. Load the booking and its Checkout Session.
+//   2. If Stripe confirms payment → mark the booking
+//      paid and STOP (never release seats / delete).
+//   3. If the Session is still open → wait until its real
+//      expires_at (+ buffer), not a hard-coded 31 min.
+//   4. Re-verify with Stripe one final time.
+//   5. Only for a definitely-unpaid / expired / cancelled
+//      Session: atomically delete the booking and release
+//      seats still owned by this user.
+//
+// If Stripe is unreachable, this job throws so Inngest
+// retries instead of deleting an unverified booking.
 // ======================================================
 
 const releaseSeatsAndDeleteBooking =
@@ -243,24 +262,169 @@ const releaseSeatsAndDeleteBooking =
       }
 
       // ================================================
-      // WAIT FOR STRIPE CHECKOUT TO EXPIRE
+      // 1. LOAD BOOKING + SESSION
       // ================================================
 
-      const cleanupTime = new Date(
-        Date.now() + 31 * 60 * 1000
-      );
+      const info =
+        await step.run(
+          "load-booking-and-session",
 
-      await step.sleepUntil(
-        "wait-for-checkout-expiration",
-        cleanupTime
-      );
+          async () => {
+            await connectDB();
+
+            const booking =
+              await Booking.findById(
+                bookingId
+              );
+
+            if (!booking) {
+              return {
+                state: "gone",
+              };
+            }
+
+            if (booking.isPaid) {
+              return {
+                state: "paid",
+                bookingId:
+                  booking._id.toString(),
+              };
+            }
+
+            const sessionId =
+              getSessionIdForBooking(
+                booking
+              );
+
+            let sessionStatus = null;
+            let expiresAt =
+              booking
+                .stripeSessionExpiresAt ??
+              null;
+
+            if (sessionId) {
+              try {
+                const session =
+                  await getStripe()
+                    .checkout
+                    .sessions
+                    .retrieve(sessionId);
+
+                sessionStatus =
+                  session.status;
+
+                // Stripe already confirms the payment —
+                // reconcile immediately and skip cleanup.
+                if (
+                  session.status ===
+                    "complete" &&
+                  session
+                    .payment_status ===
+                    "paid"
+                ) {
+                  await reconcileBookingFromSession(
+                    booking._id.toString(),
+                    session,
+                    { emitEmail: false }
+                  );
+
+                  return {
+                    state: "paid",
+                    bookingId:
+                      booking._id.toString(),
+                  };
+                }
+
+                expiresAt =
+                  session.expires_at ??
+                  expiresAt;
+
+              } catch (error) {
+                console.error(
+                  "CLEANUP SESSION RETRIEVE ERROR:",
+                  bookingId,
+                  error.message
+                );
+              }
+            }
+
+            return {
+              state: "unpaid",
+              bookingId:
+                booking._id.toString(),
+              sessionId,
+              sessionStatus,
+              expiresAt,
+            };
+          }
+        );
+
+      if (info.state === "gone") {
+        return {
+          success: true,
+          message:
+            "Booking already removed",
+        };
+      }
+
+      if (info.state === "paid") {
+        console.log(
+          "BOOKING IS PAID:",
+          bookingId
+        );
+
+        return {
+          success: true,
+          paid: true,
+          bookingDeleted: false,
+        };
+      }
 
       // ================================================
-      // CHECK PAYMENT
+      // 2. WAIT UNTIL THE CHECKOUT SESSION EXPIRES
+      //
+      // Respect the real expires_at from Stripe instead
+      // of assuming a fixed 30-minute window.
+      // ================================================
+
+      const nowMs = Date.now();
+      const expiresAtMs = info.expiresAt
+        ? info.expiresAt * 1000
+        : null;
+
+      if (
+        expiresAtMs &&
+        expiresAtMs > nowMs
+      ) {
+        await step.sleepUntil(
+          "wait-for-session-expiry",
+          new Date(
+            expiresAtMs + 30 * 1000
+          )
+        );
+      } else if (
+        !expiresAtMs ||
+        info.sessionStatus === "open"
+      ) {
+        // No expiry known: keep legacy 31-minute safety
+        // window, then re-verify against Stripe.
+        await step.sleepUntil(
+          "wait-for-checkout-expiration",
+          new Date(
+            Date.now() +
+              31 * 60 * 1000
+          )
+        );
+      } else {
+        // Session already expired/cancelled — proceed.
+      }
+
+      // ================================================
+      // 3. FINALIZE UNPAID BOOKING
       // ================================================
 
       return await step.run(
-        "check-payment-status",
+        "finalize-unpaid-booking",
 
         async () => {
           await connectDB();
@@ -278,16 +442,7 @@ const releaseSeatsAndDeleteBooking =
             };
           }
 
-          // ============================================
-          // PAID BOOKING
-          // ============================================
-
           if (booking.isPaid) {
-            console.log(
-              "BOOKING IS PAID:",
-              bookingId
-            );
-
             return {
               success: true,
               paid: true,
@@ -296,12 +451,89 @@ const releaseSeatsAndDeleteBooking =
           }
 
           // ============================================
-          // UNPAID BOOKING
+          // 3a. FINAL STRIPE VERIFICATION
+          //
+          // Never release seats or delete a booking
+          // without a definitive answer from Stripe.
           // ============================================
+
+          const sessionId =
+            getSessionIdForBooking(
+              booking
+            );
+
+          if (sessionId) {
+            try {
+              const session =
+                await getStripe()
+                  .checkout
+                  .sessions
+                  .retrieve(sessionId);
+
+              const result =
+                await reconcileBookingFromSession(
+                  booking._id.toString(),
+                  session,
+                  { emitEmail: false }
+                );
+
+              if (
+                result.status === "paid"
+              ) {
+                console.log(
+                  "BOOKING PAID DURING CLEANUP:",
+                  bookingId
+                );
+
+                return {
+                  success: true,
+                  paid: true,
+                  bookingDeleted: false,
+                };
+              }
+
+            } catch (error) {
+              console.error(
+                "CLEANUP FINAL RECONCILE ERROR:",
+                bookingId,
+                error.message
+              );
+
+              // Do not delete unverified bookings.
+              // Let Inngest retry this step.
+              throw new Error(
+                "CLEANUP DEFERRED: unable to verify Stripe payment state"
+              );
+            }
+          }
+
+          // ============================================
+          // 3b. SAFE TO RELEASE + DELETE
+          //
+          // Atomic delete guards against a webhook
+          // marking the booking paid mid-flight.
+          // ============================================
+
+          const deleted =
+            await Booking.findOneAndDelete(
+              {
+                _id: bookingId,
+                isPaid: false,
+              }
+            );
+
+          if (!deleted) {
+            return {
+              success: true,
+              bookingDeleted: false,
+              message:
+                "Booking no longer available",
+            };
+          }
 
           const show =
             await Show.findById(
-              booking.show
+              deleted.show
             );
 
           if (show) {
@@ -309,11 +541,13 @@ const releaseSeatsAndDeleteBooking =
               show.occupiedSeats = {};
             }
 
-            booking.bookedSeats.forEach(
+            deleted.bookedSeats.forEach(
               (seat) => {
                 if (
-                  show.occupiedSeats[seat] ===
-                  booking.user.toString()
+                  show.occupiedSeats[
+                    seat
+                  ] ===
+                  deleted.user.toString()
                 ) {
                   delete show.occupiedSeats[
                     seat
@@ -329,10 +563,6 @@ const releaseSeatsAndDeleteBooking =
             await show.save();
           }
 
-          await Booking.findByIdAndDelete(
-            booking._id
-          );
-
           console.log(
             "UNPAID BOOKING DELETED:",
             bookingId
@@ -343,7 +573,7 @@ const releaseSeatsAndDeleteBooking =
             paid: false,
             bookingDeleted: true,
             releasedSeats:
-              booking.bookedSeats,
+              deleted.bookedSeats,
           };
         }
       );
@@ -393,7 +623,50 @@ const sendBookingConfirmationEmail =
       }
 
       // ================================================
-      // 1. GET BOOKING INFORMATION
+      // 1. CLAIM DELIVERY (IDEMPOTENT)
+      //
+      // Replayed webhook deliveries and cron retries must
+      // never send the confirmation email twice. Only the
+      // first claimant that flips the EmailEvent to
+      // "sending" proceeds.
+      // ================================================
+
+      const claim =
+        await step.run(
+          "claim-confirmation-email",
+
+          async () => {
+            await connectDB();
+
+            const claim =
+              await claimConfirmationEmail(
+                bookingId
+              );
+
+            return {
+              status: claim?.status,
+            };
+          }
+        );
+
+      if (
+        !claim ||
+        claim.status !== "sending"
+      ) {
+        console.log(
+          "CONFIRMATION EMAIL ALREADY SENT:",
+          bookingId
+        );
+
+        return {
+          success: true,
+          alreadySent: true,
+          bookingId,
+        };
+      }
+
+      // ================================================
+      // 2. GET BOOKING INFORMATION
       // ================================================
 
       const bookingData =
@@ -473,7 +746,7 @@ const sendBookingConfirmationEmail =
         );
 
       // ================================================
-      // 2. PREPARE EMAIL CONTENT
+      // 3. PREPARE EMAIL CONTENT
       // ================================================
 
       const formattedDate =
@@ -603,7 +876,7 @@ const sendBookingConfirmationEmail =
       `;
 
       // ================================================
-      // 3. SEND EMAIL THROUGH BREVO
+      // 4. SEND EMAIL THROUGH BREVO
       // ================================================
 
       const emailResult =
@@ -629,6 +902,25 @@ const sendBookingConfirmationEmail =
         bookingId
       );
 
+      // ================================================
+      // 5. MARK DELIVERY AS SENT
+      //
+      // Best-effort so cron retries and replayed events
+      // are de-duplicated.
+      // ================================================
+
+      await step.run(
+        "mark-confirmation-email-sent",
+
+        async () => {
+          await connectDB();
+
+          await completeConfirmationEmail(
+            bookingId
+          );
+        }
+      );
+
       return {
         success: true,
 
@@ -644,6 +936,125 @@ const sendBookingConfirmationEmail =
   );
 
 // ======================================================
+// 6. RETRY PENDING CONFIRMATION EMAILS
+//
+// Reliable notification fallback for the webhook:
+//
+// If inngest.send() failed inside the webhook (after the
+// booking was already committed as paid), the email stays
+// "pending" in the EmailEvent collection. This job runs
+// every 5 minutes, re-emits app/show.booked for pending
+// events, and fails out events that have exhausted their
+// attempts.
+//
+// The confirmation function's claim step guarantees the
+// customer still receives exactly one email.
+// ======================================================
+
+const retryPendingConfirmationEmails =
+  inngest.createFunction(
+    {
+      id: "retry-pending-confirmation-emails",
+
+      triggers: [
+        {
+          cron: "*/5 * * * *",
+        },
+      ],
+    },
+
+    async ({ step }) => {
+      const staleThreshold = new Date(
+        Date.now() - 10 * 60 * 1000
+      );
+
+      // Reset "sending" events that never completed (e.g.
+      // the Inngest function exhausted its own retries),
+      // so a fresh delivery can be attempted.
+      await step.run(
+        "reset-stale-sending-events",
+
+        async () => {
+          await connectDB();
+
+          const reset =
+            await EmailEvent.updateMany(
+              {
+                kind: "confirmation",
+                status: "sending",
+                attempts: { $lt: 10 },
+                updatedAt: {
+                  $lt: staleThreshold,
+                },
+              },
+              {
+                $set: { status: "pending" },
+              }
+            );
+
+          const abandoned =
+            await EmailEvent.updateMany(
+              {
+                kind: "confirmation",
+                status: "sending",
+                attempts: { $gte: 10 },
+              },
+              {
+                $set: { status: "failed" },
+              }
+            );
+
+          console.log(
+            "EMAIL EVENT MAINTENANCE:",
+            `reset=${reset.modifiedCount} abandoned=${abandoned.modifiedCount}`
+          );
+        }
+      );
+
+      return await step.run(
+        "retry-pending-events",
+
+        async () => {
+          await connectDB();
+
+          const events =
+            await EmailEvent.find({
+              kind: "confirmation",
+              status: "pending",
+              attempts: { $lt: 10 },
+            }).limit(100);
+
+          const queued = [];
+
+          for (const ev of events) {
+            await inngest.send({
+              name: "app/show.booked",
+              data: {
+                bookingId:
+                  ev.bookingId,
+              },
+            });
+
+            queued.push(
+              ev.bookingId
+            );
+          }
+
+          console.log(
+            "EMAIL RETRY QUEUED:",
+            queued
+          );
+
+          return {
+            success: true,
+            queued,
+          };
+        }
+      );
+    }
+  );
+
+// ======================================================
 // EXPORT ALL FUNCTIONS
 // ======================================================
 
@@ -653,4 +1064,5 @@ export const functions = [
   syncUserUpdation,
   releaseSeatsAndDeleteBooking,
   sendBookingConfirmationEmail,
+  retryPendingConfirmationEmails,
 ];

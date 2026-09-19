@@ -2,6 +2,13 @@ import { clerkClient } from "@clerk/express";
 import Booking from "../models/Booking.js";
 import Movie from "../models/Movie.js";
 
+import {
+  PAYMENT_STATUS,
+  getCheckoutSessionForBooking,
+  getSessionIdForBooking,
+  reconcileBookingFromSession,
+} from "../utils/paymentSync.js";
+
 
 // ======================================================
 // API TO GET USER BOOKINGS
@@ -31,9 +38,110 @@ export const getUserBookings = async (req, res) => {
         createdAt: -1,
       });
 
+    // ==================================================
+    // RECONCILE UNPAID BOOKINGS WITH STRIPE
+    //
+    // For every still-pending booking that has a Checkout
+    // Session, verify the real Stripe state before deciding
+    // whether the saved URL is still usable.
+    //
+    // - PAID     → mark paid (no email; read-path only)
+    // - EXPIRED  → mark expired, clear Pay Now link
+    // - CANCELLED→ mark cancelled, clear Pay Now link
+    // - PENDING  → keep active Pay Now link
+    //
+    // This write path never double-emails and never marks a
+    // paid booking EXPIRED.
+    // ==================================================
+
+    const stripeAvailable =
+      Boolean(
+        process.env.STRIPE_SECRET_KEY
+      );
+
+    if (stripeAvailable) {
+      await Promise.all(
+        bookings.map(async (booking) => {
+          const paymentStatus =
+            booking.paymentStatus ||
+            PAYMENT_STATUS.PENDING;
+
+          if (
+            booking.isPaid ||
+            paymentStatus !==
+              PAYMENT_STATUS.PENDING
+          ) {
+            return;
+          }
+
+          if (
+            !getSessionIdForBooking(
+              booking
+            )
+          ) {
+            return;
+          }
+
+          try {
+            const session =
+              await getCheckoutSessionForBooking(
+                booking
+              );
+
+            if (!session) {
+              return;
+            }
+
+            await reconcileBookingFromSession(
+              booking._id.toString(),
+              session,
+              { emitEmail: false }
+            );
+
+          } catch (error) {
+            console.error(
+              "BOOKING SESSION RECONCILE ERROR:",
+              booking._id.toString(),
+              error.message
+            );
+          }
+        })
+      );
+    }
+
+    // ==================================================
+    // REFETCH FOR FRESH STATE
+    // ==================================================
+
+    const reconciledBookings =
+      await Booking.find({
+        user: userId,
+      })
+        .populate({
+          path: "show",
+          populate: {
+            path: "movie",
+          },
+        })
+        .sort({
+          createdAt: -1,
+        });
+
+    const result =
+      reconciledBookings.map((booking) => {
+        const plain =
+          booking.toObject();
+
+        plain.paymentStatus =
+          booking.paymentStatus ||
+          PAYMENT_STATUS.PENDING;
+
+        return plain;
+      });
+
     res.json({
       success: true,
-      bookings,
+      bookings: result,
     });
 
   } catch (error) {
