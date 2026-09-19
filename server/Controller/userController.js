@@ -45,13 +45,14 @@ export const getUserBookings = async (req, res) => {
     // Session, verify the real Stripe state before deciding
     // whether the saved URL is still usable.
     //
-    // - PAID     → mark paid (no email; read-path only)
+    // - PAID     → mark paid (may enqueue confirmation
+    //              email if the webhook never fired; the
+    //              EmailEvent claim prevents duplicates)
     // - EXPIRED  → mark expired, clear Pay Now link
     // - CANCELLED→ mark cancelled, clear Pay Now link
     // - PENDING  → keep active Pay Now link
     //
-    // This write path never double-emails and never marks a
-    // paid booking EXPIRED.
+    // This write path never marks a paid booking EXPIRED.
     // ==================================================
 
     const stripeAvailable =
@@ -95,7 +96,7 @@ export const getUserBookings = async (req, res) => {
             await reconcileBookingFromSession(
               booking._id.toString(),
               session,
-              { emitEmail: false }
+              { emitEmail: true }
             );
 
           } catch (error) {

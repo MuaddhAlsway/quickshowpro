@@ -8,34 +8,27 @@ import sendEmail from "../configs/nodemailer.js";
 import { inngest } from "../configs/inngest.js";
 
 import {
-  claimConfirmationEmail,
-  completeConfirmationEmail,
+  EMAIL_KIND_CONFIRMATION,
+  EMAIL_KIND_REMINDER_24H,
+  EMAIL_KIND_REMINDER_2H,
+  claimEmail,
+  completeEmail,
   getSessionIdForBooking,
   getStripe,
+  markEmailFailed,
   reconcileBookingFromSession,
 } from "../utils/paymentSync.js";
 
+import {
+  buildBookingConfirmationEmail,
+  buildMovieReminderEmail,
+} from "../utils/emailTemplates.js";
+
+import {
+  scheduleMovieReminders,
+} from "../utils/reminders.js";
+
 export { inngest };
-
-// ======================================================
-// HELPER: ESCAPE HTML
-// ======================================================
-
-const escapeHtml = (value) =>
-  String(value ?? "").replace(
-    /[&<>"']/g,
-    (character) => {
-      const entities = {
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      };
-
-      return entities[character];
-    }
-  );
 
 // ======================================================
 // 1. CREATE USER
@@ -315,6 +308,9 @@ const releaseSeatsAndDeleteBooking =
 
                 // Stripe already confirms the payment —
                 // reconcile immediately and skip cleanup.
+                // emitEmail is safe: the EmailEvent claim
+                // guarantees exactly one confirmation email
+                // even if the webhook races with this job.
                 if (
                   session.status ===
                     "complete" &&
@@ -325,7 +321,7 @@ const releaseSeatsAndDeleteBooking =
                   await reconcileBookingFromSession(
                     booking._id.toString(),
                     session,
-                    { emitEmail: false }
+                    { emitEmail: true }
                   );
 
                   return {
@@ -474,7 +470,7 @@ const releaseSeatsAndDeleteBooking =
                 await reconcileBookingFromSession(
                   booking._id.toString(),
                   session,
-                  { emitEmail: false }
+                  { emitEmail: true }
                 );
 
               if (
@@ -639,8 +635,9 @@ const sendBookingConfirmationEmail =
             await connectDB();
 
             const claim =
-              await claimConfirmationEmail(
-                bookingId
+              await claimEmail(
+                bookingId,
+                EMAIL_KIND_CONFIRMATION
               );
 
             return {
@@ -733,147 +730,58 @@ const sendBookingConfirmationEmail =
               movieTitle:
                 booking.show.movie.title,
 
+              posterPath:
+                booking.show.movie
+                  .poster_path,
+
               showDateTime:
                 booking.show.showDateTime,
 
               bookedSeats:
-                booking.bookedSeats,
+                booking.bookedSeats || [],
 
               amount:
                 booking.amount,
+
+              currency:
+                booking.currency || "usd",
             };
           }
         );
 
       // ================================================
-      // 3. PREPARE EMAIL CONTENT
+      // 3. BUILD EMAIL CONTENT
+      //
+      // The template escapes every dynamic value and
+      // formats currency + timezone from configuration.
       // ================================================
 
-      const formattedDate =
-        new Date(
-          bookingData.showDateTime
-        ).toLocaleString("en-US", {
-          dateStyle: "full",
-          timeStyle: "short",
-          timeZone: "Asia/Riyadh",
+      const emailContent =
+        buildBookingConfirmationEmail({
+          userName:
+            bookingData.userName,
+
+          movieTitle:
+            bookingData.movieTitle,
+
+          posterPath:
+            bookingData.posterPath,
+
+          showDateTime:
+            bookingData.showDateTime,
+
+          bookedSeats:
+            bookingData.bookedSeats,
+
+          amount:
+            bookingData.amount,
+
+          currency:
+            bookingData.currency,
+
+          bookingId:
+            bookingData.bookingId,
         });
-
-      const seats =
-        bookingData.bookedSeats
-          .map(escapeHtml)
-          .join(", ");
-
-      const emailBody = `
-        <!DOCTYPE html>
-
-        <html lang="en">
-
-          <head>
-            <meta charset="UTF-8" />
-
-            <title>
-              QuickShow Booking Confirmation
-            </title>
-          </head>
-
-          <body
-            style="
-              font-family: Arial, sans-serif;
-              background-color: #f5f5f5;
-              padding: 30px;
-              color: #222;
-            "
-          >
-
-            <div
-              style="
-                max-width: 600px;
-                margin: auto;
-                background: white;
-                padding: 30px;
-                border-radius: 12px;
-              "
-            >
-
-              <h1>
-                QuickShow
-              </h1>
-
-              <h2>
-                Booking Confirmed!
-              </h2>
-
-              <p>
-                Hello
-                ${escapeHtml(
-                  bookingData.userName
-                )},
-              </p>
-
-              <p>
-                Your payment was successful.
-                Your movie tickets are confirmed.
-              </p>
-
-              <hr />
-
-              <h3>
-                ${escapeHtml(
-                  bookingData.movieTitle
-                )}
-              </h3>
-
-              <p>
-                <strong>
-                  Date & Time:
-                </strong>
-
-                ${escapeHtml(
-                  formattedDate
-                )}
-              </p>
-
-              <p>
-                <strong>
-                  Seats:
-                </strong>
-
-                ${seats}
-              </p>
-
-              <p>
-                <strong>
-                  Total Paid:
-                </strong>
-
-                $${escapeHtml(
-                  bookingData.amount
-                )}
-              </p>
-
-              <p>
-                <strong>
-                  Booking ID:
-                </strong>
-
-                ${escapeHtml(
-                  bookingData.bookingId
-                )}
-              </p>
-
-              <hr />
-
-              <p>
-                Thank you for booking
-                with QuickShow!
-              </p>
-
-            </div>
-
-          </body>
-
-        </html>
-      `;
 
       // ================================================
       // 4. SEND EMAIL THROUGH BREVO
@@ -889,18 +797,13 @@ const sendBookingConfirmationEmail =
                 bookingData.userEmail,
 
               subject:
-                `Booking Confirmed - ${bookingData.movieTitle}`,
+                emailContent.subject,
 
               body:
-                emailBody,
+                emailContent.html,
             });
           }
         );
-
-      console.log(
-        "BOOKING CONFIRMATION SENT:",
-        bookingId
-      );
 
       // ================================================
       // 5. MARK DELIVERY AS SENT
@@ -915,10 +818,40 @@ const sendBookingConfirmationEmail =
         async () => {
           await connectDB();
 
-          await completeConfirmationEmail(
-            bookingId
+          await completeEmail(
+            bookingId,
+            EMAIL_KIND_CONFIRMATION
           );
         }
+      );
+
+      // ================================================
+      // 6. SCHEDULE MOVIE REMINDERS
+      //
+      // Payment is confirmed and the confirmation email
+      // is sent — now schedule the 24h and 2h reminder
+      // events at showStart - lead. Reminders inside the
+      // window (booking made <24h / <2h before show) are
+      // skipped automatically.
+      // ================================================
+
+      const reminderSchedule =
+        await step.run(
+          "schedule-movie-reminders",
+
+          async () => {
+            return await scheduleMovieReminders({
+              bookingId,
+
+              showDateTime:
+                bookingData.showDateTime,
+            });
+          }
+        );
+
+      console.log(
+        "BOOKING CONFIRMATION SENT:",
+        bookingId
       );
 
       return {
@@ -931,6 +864,9 @@ const sendBookingConfirmationEmail =
 
         messageId:
           emailResult.messageId,
+
+        reminders:
+          reminderSchedule,
       };
     }
   );
@@ -1055,6 +991,379 @@ const retryPendingConfirmationEmails =
   );
 
 // ======================================================
+// 7. MOVIE REMINDER EMAILS
+//
+// 24 hours and 2 hours before the show starts.
+//
+// The events are `ts`-scheduled by the confirmed booking
+// workflow (see scheduleMovieReminders in utils/reminders)
+// so delivery is durable — never setTimeout in memory.
+//
+// Before sending, each function:
+//
+//   1. Claims the reminder EmailEvent (dedupe).
+//   2. Reloads the booking from MongoDB.
+//   3. Verifies the booking still exists.
+//   4. Verifies payment is confirmed (isPaid).
+//   5. Verifies the booking was not cancelled / expired.
+//   6. Verifies the show + movie still exist.
+//   7. Verifies the movie has not started.
+//
+// Cancelled, expired, started, or missing bookings are
+// skipped quietly (marked failed) — never emailed.
+// ======================================================
+
+const loadBookingForReminder = async (
+  bookingId
+) => {
+  await connectDB();
+
+  const booking =
+    await Booking.findById(bookingId)
+      .populate({
+        path: "show",
+
+        populate: {
+          path: "movie",
+          model: "Movie",
+        },
+      })
+      .populate("user");
+
+  if (!booking) {
+    return {
+      terminal: "booking-not-found",
+    };
+  }
+
+  if (!booking.isPaid) {
+    return {
+      terminal: "booking-not-paid",
+    };
+  }
+
+  if (
+    booking.paymentStatus === "CANCELLED"
+  ) {
+    return {
+      terminal: "booking-cancelled",
+    };
+  }
+
+  if (
+    booking.paymentStatus === "EXPIRED"
+  ) {
+    return {
+      terminal: "booking-expired",
+    };
+  }
+
+  if (
+    !booking.show ||
+    !booking.show.movie
+  ) {
+    return {
+      terminal: "show-or-movie-not-found",
+    };
+  }
+
+  if (
+    booking.show.showDateTime &&
+    new Date(
+      booking.show.showDateTime
+    ).getTime() <= Date.now()
+  ) {
+    return {
+      terminal: "movie-already-started",
+    };
+  }
+
+  if (
+    !booking.user ||
+    !booking.user.email
+  ) {
+    return {
+      terminal: "user-email-not-found",
+    };
+  }
+
+  return {
+    data: {
+      bookingId:
+        booking._id.toString(),
+
+      userName:
+        booking.user.name,
+
+      userEmail:
+        booking.user.email,
+
+      movieTitle:
+        booking.show.movie.title,
+
+      posterPath:
+        booking.show.movie
+          .poster_path,
+
+      showDateTime:
+        booking.show.showDateTime,
+
+      bookedSeats:
+        booking.bookedSeats || [],
+    },
+  };
+};
+
+const sendMovieReminder = (
+  kind,
+  functionId,
+  eventName,
+  reminderType
+) => {
+  return inngest.createFunction(
+    {
+      id: functionId,
+
+      triggers: [
+        {
+          event: eventName,
+        },
+      ],
+    },
+
+    async ({ event, step }) => {
+      const bookingId =
+        event.data?.bookingId;
+
+      if (!bookingId) {
+        throw new Error(
+          "Booking ID is missing"
+        );
+      }
+
+      // ================================================
+      // 1. CLAIM REMINDER DELIVERY (IDEMPOTENT)
+      // ================================================
+
+      const claim =
+        await step.run(
+          `claim-${kind}-reminder`,
+
+          async () => {
+            await connectDB();
+
+            const claim =
+              await claimEmail(
+                bookingId,
+                kind
+              );
+
+            return {
+              status: claim?.status,
+            };
+          }
+        );
+
+      if (
+        !claim ||
+        claim.status !== "sending"
+      ) {
+        console.log(
+          "REMINDER ALREADY SENT:",
+          bookingId,
+          kind
+        );
+
+        return {
+          success: true,
+          alreadySent: true,
+          bookingId,
+        };
+      }
+
+      // ================================================
+      // 2. RELOAD + VERIFY THE BOOKING
+      // ================================================
+
+      let context;
+
+      try {
+        context = await step.run(
+          `load-and-verify-${kind}-booking`,
+
+          async () => {
+            const result =
+              await loadBookingForReminder(
+                bookingId
+              );
+
+            if (result.terminal) {
+              return {
+                terminal: true,
+                reason:
+                  result.terminal,
+              };
+            }
+
+            return {
+              terminal: false,
+              data: result.data,
+            };
+          }
+        );
+      } catch (error) {
+        await step.run(
+          `mark-${kind}-reminder-failed`,
+
+          async () => {
+            await connectDB();
+
+            await markEmailFailed(
+              bookingId,
+              kind,
+              error
+            );
+          }
+        );
+
+        throw error;
+      }
+
+      if (context.terminal) {
+        console.log(
+          "REMINDER SKIPPED:",
+          bookingId,
+          kind,
+          context.reason
+        );
+
+        await step.run(
+          `mark-${kind}-reminder-skipped`,
+
+          async () => {
+            await connectDB();
+
+            await markEmailFailed(
+              bookingId,
+              kind,
+              context.reason
+            );
+          }
+        );
+
+        return {
+          success: true,
+          skipped: true,
+          reason: context.reason,
+          bookingId,
+        };
+      }
+
+      const bookingData = context.data;
+
+      // ================================================
+      // 3. BUILD EMAIL CONTENT
+      // ================================================
+
+      const emailContent =
+        buildMovieReminderEmail(
+          {
+            type: reminderType,
+          },
+          {
+            userName:
+              bookingData.userName,
+
+            movieTitle:
+              bookingData.movieTitle,
+
+            posterPath:
+              bookingData.posterPath,
+
+            showDateTime:
+              bookingData.showDateTime,
+
+            bookedSeats:
+              bookingData.bookedSeats,
+
+            bookingId:
+              bookingData.bookingId,
+          }
+        );
+
+      // ================================================
+      // 4. SEND EMAIL THROUGH BREVO
+      // ================================================
+
+      const emailResult =
+        await step.run(
+          `send-${kind}-reminder`,
+
+          async () => {
+            return await sendEmail({
+              to:
+                bookingData.userEmail,
+
+              subject:
+                emailContent.subject,
+
+              body:
+                emailContent.html,
+            });
+          }
+        );
+
+      await step.run(
+        `mark-${kind}-reminder-sent`,
+
+        async () => {
+          await connectDB();
+
+          await completeEmail(
+            bookingId,
+            kind
+          );
+        }
+      );
+
+      console.log(
+        "REMINDER SENT:",
+        bookingId,
+        kind
+      );
+
+      return {
+        success: true,
+
+        bookingId,
+
+        email:
+          bookingData.userEmail,
+
+        messageId:
+          emailResult.messageId,
+      };
+    }
+  );
+};
+
+const sendMovieReminder24h =
+  sendMovieReminder(
+    EMAIL_KIND_REMINDER_24H,
+    "send-movie-reminder-24h",
+    "app/movie-reminder.24h",
+    "24h"
+  );
+
+const sendMovieReminder2h =
+  sendMovieReminder(
+    EMAIL_KIND_REMINDER_2H,
+    "send-movie-reminder-2h",
+    "app/movie-reminder.2h",
+    "2h"
+  );
+
+// ======================================================
 // EXPORT ALL FUNCTIONS
 // ======================================================
 
@@ -1065,4 +1374,6 @@ export const functions = [
   releaseSeatsAndDeleteBooking,
   sendBookingConfirmationEmail,
   retryPendingConfirmationEmails,
+  sendMovieReminder24h,
+  sendMovieReminder2h,
 ];

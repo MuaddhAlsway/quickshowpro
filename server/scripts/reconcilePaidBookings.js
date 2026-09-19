@@ -3,13 +3,22 @@ import "dotenv/config";
 import connectDB from "../configs/db.js";
 import Booking from "../models/Booking.js";
 import Show from "../models/Show.js";
+import EmailEvent from "../models/EmailEvent.js";
 
 import {
+  EMAIL_KIND_CONFIRMATION,
   PAYMENT_STATUS,
+  emitBookingPaidEvent,
+  enqueueEmail,
   evaluateSession,
   getSessionIdForBooking,
   getStripe,
 } from "../utils/paymentSync.js";
+
+import {
+  computeReminderSchedule,
+  scheduleMovieReminders,
+} from "../utils/reminders.js";
 
 // ======================================================
 // ONE-TIME RECONCILIATION SCRIPT
@@ -31,6 +40,9 @@ import {
 //   # Apply verified updates
 //   node scripts/reconcilePaidBookings.js --apply
 //
+//   # Apply updates WITHOUT queueing any email/reminders
+//   node scripts/reconcilePaidBookings.js --apply --no-notify
+//
 //   # Different bookings
 //   node scripts/reconcilePaidBookings.js --id=... --id=...
 //
@@ -39,12 +51,21 @@ import {
 //   - Idempotent: already-paid bookings are skipped.
 //   - A booking is ONLY updated when the Stripe session
 //     verifies 100%: complete + paid + matching
-//     metadata.bookingId + matching amount + "usd".
+//     metadata.bookingId + matching amount + matching
+//     currency.
 //   - Never creates a Checkout Session.
 //   - Never charges the customer again.
 //   - Never changes seat assignments (reports only).
-//   - Never sends emails.
 //   - Dry run by default: pass --apply to write.
+//
+// NOTIFICATIONS
+//
+//   In --apply mode (unless --no-notify), a confirmed
+//   booking that has no "sent" confirmation on the email
+//   ledger is queued through the same idempotent path the
+//   webhook uses (enqueue + app/show.booked), and both
+//   movie reminders are scheduled with their real lead
+//   times. The EmailEvent claim prevents duplicate emails.
 // ======================================================
 
 const DEFAULT_BOOKING_IDS = [
@@ -56,6 +77,9 @@ const args = process.argv.slice(2);
 
 const apply =
   args.includes("--apply");
+
+const noNotify =
+  args.includes("--no-notify");
 
 const idArgs = args
   .filter((arg) =>
@@ -96,6 +120,7 @@ const run = async () => {
     verifiedPaid: 0,
     rejected: 0,
     updated: 0,
+    notified: 0,
   };
 
   for (const bookingId of bookingIds) {
@@ -284,7 +309,55 @@ const run = async () => {
     summary.verifiedPaid++;
 
     // ------------------------------------------------
-    // 10. Update only verified paid bookings.
+    // 10. NOTIFICATION LEDGER STATUS
+    //
+    // Report (without sending anything) whether this
+    // booking already received a confirmation email and
+    // whether each reminder is still schedulable.
+    // ------------------------------------------------
+
+    const emailEvent =
+      await EmailEvent.findOne({
+        bookingId:
+          booking._id.toString(),
+        kind: EMAIL_KIND_CONFIRMATION,
+      });
+
+    console.log(
+      `  confirmation email status: ${
+        emailEvent
+          ? emailEvent.status +
+            (emailEvent.attempts > 0
+              ? ` (attempts: ${emailEvent.attempts})`
+              : "")
+          : "never queued"
+      }`
+    );
+
+    const showDateTime =
+      show?.showDateTime;
+
+    for (const kind of [
+      "reminder-24h",
+      "reminder-2h",
+    ]) {
+      const { schedule, skip } =
+        computeReminderSchedule({
+          showDateTime,
+          kind,
+        });
+
+      console.log(
+        `  ${kind}: ${
+          schedule
+            ? `schedulable at ${schedule.toISOString()}`
+            : `skipped (${skip})`
+        }`
+      );
+    }
+
+    // ------------------------------------------------
+    // 11. Update only verified paid bookings.
     // ------------------------------------------------
 
     if (!apply) {
@@ -321,6 +394,67 @@ const run = async () => {
       );
 
       summary.updated++;
+
+      // ----------------------------------------------
+      // 12. QUEUE MISSING NOTIFICATIONS (unless
+      //     --no-notify)
+      //
+      // Use the same idempotent paths as the webhook.
+      // If the confirmation is already "sent" on the
+      // ledger, do nothing — no duplicates. Reminders
+      // are scheduled from the real show start time and
+      // skip automatically when the booking was made
+      // inside the lead window.
+      // ----------------------------------------------
+
+      if (!noNotify) {
+        const alreadySent =
+          emailEvent?.status === "sent";
+
+        if (!alreadySent) {
+          await enqueueEmail(
+            booking._id.toString(),
+            EMAIL_KIND_CONFIRMATION
+          );
+
+          await emitBookingPaidEvent(
+            booking._id.toString()
+          );
+
+          console.log(
+            "  CONFIRMATION EMAIL QUEUED"
+          );
+
+          summary.notified++;
+        } else {
+          console.log(
+            "  CONFIRMATION EMAIL ALREADY SENT — skipped"
+          );
+        }
+
+        const reminders =
+          await scheduleMovieReminders({
+            bookingId:
+              booking._id.toString(),
+            showDateTime,
+          });
+
+        console.log(
+          `  REMINDERS: scheduled=${reminders.scheduled.length} skipped=${reminders.skipped.length}`
+        );
+
+        reminders.scheduled.forEach(
+          (entry) => {
+            console.log(
+              `    ${entry.kind} at ${entry.at}`
+            );
+          }
+        );
+      } else {
+        console.log(
+          "  NOTIFICATIONS SKIPPED (--no-notify)"
+        );
+      }
     } else {
       console.log(
         "  UPDATE SKIPPED — booking already paid"
@@ -360,6 +494,10 @@ const run = async () => {
 
   console.log(
     `  updated (apply):  ${summary.updated}`
+  );
+
+  console.log(
+    `  emails queued:    ${summary.notified}`
   );
 
   console.log(

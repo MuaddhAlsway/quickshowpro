@@ -4,6 +4,7 @@ import connectDB from "../configs/db.js";
 
 import {
   getStripe,
+  markBookingExpired,
   reconcileBookingFromSession,
 } from "../utils/paymentSync.js";
 
@@ -14,11 +15,19 @@ import {
 //
 //   1. checkout.session.completed
 //   2. checkout.session.async_payment_succeeded
+//   3. checkout.session.expired
 //
 // A booking is never marked paid until Stripe confirms
 // payment (payment_status === "paid" AND the session is
 // "complete"). Metadata, amount and currency are verified
 // by reconcileBookingFromSession before the write.
+//
+// An unpaid booking whose Checkout Session has expired is
+// marked EXPIRED (clears the Pay Now link). A paid session
+// can never be marked EXPIRED — the guard requires
+// isPaid !== true. Seats for expired unpaid bookings are
+// released later by the Inngest cleanup job, which
+// re-verifies the real Stripe state before deleting.
 //
 // The endpoint is registered BEFORE express.json() so the
 // raw request body is available for signature verification.
@@ -83,6 +92,78 @@ export const stripeWebhooks = async (
         "checkout.session.completed" ||
       event.type ===
         "checkout.session.async_payment_succeeded";
+
+    // ==================================================
+    // 2a. EXPIRED SESSION
+    //
+    // The customer abandoned the Checkout Session. Mark the
+    // still-unpaid booking EXPIRED so the UI stops showing
+    // Pay Now. Seat release is handled by the cleanup job
+    // (which re-verifies Stripe before deleting).
+    // ==================================================
+
+    if (
+      event.type ===
+      "checkout.session.expired"
+    ) {
+      const expiredSession =
+        event.data.object;
+
+      const expiredBookingId =
+        expiredSession.metadata
+          ?.bookingId;
+
+      if (!expiredBookingId) {
+        console.log(
+          "STRIPE WEBHOOK: EXPIRED SESSION WITHOUT BOOKING ID"
+        );
+
+        return response.json({
+          received: true,
+        });
+      }
+
+      const expiredBooking =
+        await Booking.findById(
+          expiredBookingId
+        );
+
+      if (!expiredBooking) {
+        console.log(
+          "STRIPE WEBHOOK: EXPIRED SESSION BOOKING NOT FOUND:",
+          expiredBookingId
+        );
+
+        return response.json({
+          received: true,
+        });
+      }
+
+      // Never mark a paid booking expired.
+      if (expiredBooking.isPaid) {
+        console.log(
+          "STRIPE WEBHOOK: EXPIRED SESSION BUT BOOKING ALREADY PAID:",
+          expiredBookingId
+        );
+
+        return response.json({
+          received: true,
+        });
+      }
+
+      await markBookingExpired(
+        expiredBookingId
+      );
+
+      console.log(
+        "STRIPE WEBHOOK: BOOKING MARKED EXPIRED:",
+        expiredBookingId
+      );
+
+      return response.json({
+        received: true,
+      });
+    }
 
     if (!isPaymentConfirmedEvent) {
       console.log(

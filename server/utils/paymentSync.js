@@ -165,14 +165,18 @@ export const evaluateSession = (
     };
   }
 
+  const bookingCurrency =
+    booking?.currency || "usd";
+
   if (
     session.currency &&
-    session.currency !== "usd"
+    session.currency.toLowerCase?.() !==
+      bookingCurrency.toLowerCase?.()
   ) {
     return {
       state: PAYMENT_STATUS.PENDING,
       matched: false,
-      reason: `Currency mismatch: ${session.currency}`,
+      reason: `Currency mismatch: expected ${bookingCurrency}, session has ${session.currency}`,
     };
   }
 
@@ -438,46 +442,71 @@ export const getCheckoutSessionForBooking =
   };
 
 // ======================================================
+// EMAIL LEDGER KINDS
+// ======================================================
+
+export const EMAIL_KIND_CONFIRMATION =
+  "confirmation";
+
+export const EMAIL_KIND_REMINDER_24H =
+  "reminder-24h";
+
+export const EMAIL_KIND_REMINDER_2H =
+  "reminder-2h";
+
+// ======================================================
 // CONFIRMATION EMAIL LEDGER
 //
 // Reliable, retryable dispatch:
 //
 // Webhook / reconcile:
-//   1. enqueueConfirmationEmail()  → upsert "pending"
+//   1. enqueueEmail()              → upsert "pending"
 //   2. emitBookingPaidEvent()      → inngest.send()
 //      (on failure the event stays "pending" and the
 //       cron function retries it — the webhook does NOT
 //       return HTTP 500 after the DB commit succeeded)
 //
 // Inngest function:
-//   3. claimConfirmationEmail()    → "pending"/"sending" → "sending"
+//   3. claimEmail()                → "pending"/"sending"/"failed" → "sending"
 //   4. send via Nodemailer
-//   5. completeConfirmationEmail() → "sent"
+//   5. completeEmail()             → "sent"
 //
 // "sent" is never overwritten, so replayed webhook
 // deliveries and cron retries never double-send.
+//
+// The same ledger is reused for reminder emails by
+// passing the kind ("reminder-24h" / "reminder-2h").
 // ======================================================
 
 export const enqueueConfirmationEmail =
-  async (bookingId) => {
-    const id = String(bookingId);
-
-    await EmailEvent.updateOne(
-      {
-        bookingId: id,
-        kind: "confirmation",
-      },
-      {
-        $setOnInsert: {
-          bookingId: id,
-          kind: "confirmation",
-          status: "pending",
-          attempts: 0,
-        },
-      },
-      { upsert: true }
+  async (bookingId) =>
+    enqueueEmail(
+      bookingId,
+      EMAIL_KIND_CONFIRMATION
     );
-  };
+
+export const enqueueEmail = async (
+  bookingId,
+  kind
+) => {
+  const id = String(bookingId);
+
+  await EmailEvent.updateOne(
+    {
+      bookingId: id,
+      kind,
+    },
+    {
+      $setOnInsert: {
+        bookingId: id,
+        kind,
+        status: "pending",
+        attempts: 0,
+      },
+    },
+    { upsert: true }
+  );
+};
 
 export const emitBookingPaidEvent = async (
   bookingId
@@ -500,71 +529,117 @@ export const emitBookingPaidEvent = async (
 };
 
 export const claimConfirmationEmail =
-  async (bookingId) => {
-    const id = String(bookingId);
+  async (bookingId) =>
+    claimEmail(
+      bookingId,
+      EMAIL_KIND_CONFIRMATION
+    );
 
-    // 1) Claim an existing, not-yet-sent delivery.
-    const claimed =
-      await EmailEvent.findOneAndUpdate(
-        {
-          bookingId: id,
-          kind: "confirmation",
-          status: {
-            $in: [
-              "pending",
-              "sending",
-              "failed",
-            ],
-          },
-        },
-        {
-          $set: {
-            status: "sending",
-          },
-          $inc: { attempts: 1 },
-        },
-        { new: true }
-      );
+export const claimEmail = async (
+  bookingId,
+  kind
+) => {
+  const id = String(bookingId);
 
-    if (claimed) {
-      return claimed;
-    }
-
-    // 2) No record yet (or it is already "sent").
-    //    Create one in "sending" state so this delivery
-    //    proceeds exactly once.
-    return EmailEvent.findOneAndUpdate(
+  // 1) Claim an existing, not-yet-sent delivery.
+  const claimed =
+    await EmailEvent.findOneAndUpdate(
       {
         bookingId: id,
-        kind: "confirmation",
-      },
-      {
-        $setOnInsert: {
-          bookingId: id,
-          kind: "confirmation",
-          status: "sending",
-          attempts: 1,
+        kind,
+        status: {
+          $in: [
+            "pending",
+            "sending",
+            "failed",
+          ],
         },
       },
       {
-        new: true,
-        upsert: true,
-      }
+        $set: {
+          status: "sending",
+        },
+        $inc: { attempts: 1 },
+      },
+      { new: true }
     );
-  };
+
+  if (claimed) {
+    return claimed;
+  }
+
+  // 2) No record yet (or it is already "sent").
+  //    Create one in "sending" state so this delivery
+  //    proceeds exactly once.
+  return EmailEvent.findOneAndUpdate(
+    {
+      bookingId: id,
+      kind,
+    },
+    {
+      $setOnInsert: {
+        bookingId: id,
+        kind,
+        status: "sending",
+        attempts: 1,
+      },
+    },
+    {
+      new: true,
+      upsert: true,
+    }
+  );
+};
 
 export const completeConfirmationEmail =
-  async (bookingId) => {
-    const id = String(bookingId);
-
-    await EmailEvent.updateOne(
-      {
-        bookingId: id,
-        kind: "confirmation",
-        status: "sending",
-      },
-      {
-        $set: { status: "sent" },
-      }
+  async (bookingId) =>
+    completeEmail(
+      bookingId,
+      EMAIL_KIND_CONFIRMATION
     );
-  };
+
+export const completeEmail = async (
+  bookingId,
+  kind
+) => {
+  const id = String(bookingId);
+
+  await EmailEvent.updateOne(
+    {
+      bookingId: id,
+      kind,
+      status: "sending",
+    },
+    {
+      $set: {
+        status: "sent",
+        lastError: null,
+      },
+    }
+  );
+};
+
+export const markEmailFailed = async (
+  bookingId,
+  kind,
+  error
+) => {
+  const id = String(bookingId);
+
+  await EmailEvent.updateOne(
+    {
+      bookingId: id,
+      kind,
+      status: "sending",
+    },
+    {
+      $set: {
+        status: "failed",
+        lastError:
+          String(error?.message || error).slice(
+            0, 500
+          ),
+      },
+    }
+  );
+};

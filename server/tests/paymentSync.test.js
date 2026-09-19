@@ -187,6 +187,41 @@ test("rejects paid session with non-usd currency", () => {
   assert.match(verdict.reason, /Currency mismatch/i);
 });
 
+test("PAID: session currency matches booking.currency", () => {
+  const verdict = evaluateSession(
+    {
+      ...booking,
+      currency: "usd",
+    },
+    {
+      ...baseSession,
+      currency: "usd",
+    }
+  );
+
+  assert.equal(verdict.state, PAYMENT_STATUS.PAID);
+  assert.equal(verdict.matched, true);
+});
+
+test("PAID: booking currency defaults to usd when absent", () => {
+  const verdict = evaluateSession(
+    { ...booking, currency: undefined },
+    { ...baseSession, currency: "usd" }
+  );
+
+  assert.equal(verdict.state, PAYMENT_STATUS.PAID);
+});
+
+test("rejects paid session whose currency differs from booking.currency", () => {
+  const verdict = evaluateSession(
+    { ...booking, currency: "sar" },
+    { ...baseSession, currency: "usd" }
+  );
+
+  assert.equal(verdict.state, PAYMENT_STATUS.PENDING);
+  assert.match(verdict.reason, /Currency mismatch/i);
+});
+
 test("handles missing session data safely", () => {
   const verdict = evaluateSession(
     booking,

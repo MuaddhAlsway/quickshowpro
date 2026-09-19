@@ -12,6 +12,16 @@ const stripeInstance = new Stripe(
   process.env.STRIPE_SECRET_KEY
 );
 
+// ======================================================
+// BOOKING CURRENCY
+//
+// The client displays the currency via VITE_CURRENCY.
+// Keep the server in sync through BOOKING_CURRENCY.
+// ======================================================
+
+const BOOKING_CURRENCY =
+  process.env.BOOKING_CURRENCY || "usd";
+
 
 // ======================================================
 // CHECK SEAT AVAILABILITY
@@ -278,6 +288,8 @@ export const createBooking = async (
         user: userId,
         show: showId,
         amount,
+        currency:
+          BOOKING_CURRENCY,
         bookedSeats:
           selectedSeats,
         isPaid: false,
@@ -343,7 +355,8 @@ export const createBooking = async (
     const lineItems = [
       {
         price_data: {
-          currency: "usd",
+          currency:
+            BOOKING_CURRENCY,
 
           product_data: {
             name:

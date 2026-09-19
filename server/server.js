@@ -157,6 +157,8 @@ app.get(
 // 4. release-seats-delete-booking
 // 5. send-booking-confirmation-email
 // 6. retry-pending-confirmation-emails
+// 7. send-movie-reminder-24h
+// 8. send-movie-reminder-2h
 // ======================================================
 
 app.use(
