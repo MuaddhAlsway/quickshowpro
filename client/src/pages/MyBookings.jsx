@@ -59,100 +59,101 @@ function MyBookings() {
   // GET USER BOOKINGS
   // ======================================================
 
-  const getMyBookings =
-    async () => {
+  const getMyBookings = async () => {
 
-      try {
+    try {
 
-        setLoading(true);
-
-
-        // ===============================================
-        // GET CLERK TOKEN
-        // ===============================================
-
-        const token =
-          await getToken();
+      setLoading(true);
 
 
-        if (!token) {
+      // ===============================================
+      // GET CLERK TOKEN
+      // ===============================================
 
-          setBookings([]);
-
-          return;
-        }
-
-
-        // ===============================================
-        // REQUEST
-        //
-        // GET /api/user/bookings
-        // ===============================================
-
-        const {
-          data,
-        } = await axios.get(
-          "/api/user/bookings",
-          {
-            headers: {
-              Authorization:
-                `Bearer ${token}`,
-            },
-          }
-        );
+      const token =
+        await getToken();
 
 
-        console.log(
-          "MY BOOKINGS RESPONSE:",
-          data
-        );
-
-
-        // ===============================================
-        // SUCCESS
-        // ===============================================
-
-        if (data.success) {
-
-          setBookings(
-            data.bookings || []
-          );
-
-        } else {
-
-          setBookings([]);
-
-          toast.error(
-            data.message ||
-            "Failed to load bookings"
-          );
-        }
-
-      } catch (error) {
-
-        console.error(
-          "GET MY BOOKINGS ERROR:",
-          error.response?.status,
-          error.response?.data ||
-          error.message
-        );
-
+      if (!token) {
 
         setBookings([]);
 
+        return;
+      }
 
-        toast.error(
-          error.response?.data?.message ||
-          error.message ||
-          "Failed to load bookings"
+
+      // ===============================================
+      // REQUEST
+      //
+      // GET /api/user/bookings
+      // ===============================================
+
+      const {
+        data,
+      } = await axios.get(
+        "/api/user/bookings",
+        {
+          headers: {
+            Authorization:
+              `Bearer ${token}`,
+          },
+        }
+      );
+
+
+      console.log(
+        "MY BOOKINGS RESPONSE:",
+        data
+      );
+
+
+      // ===============================================
+      // SUCCESS
+      // ===============================================
+
+      if (data.success) {
+
+        setBookings(
+          data.bookings || []
         );
 
-      } finally {
+      } else {
 
-        setLoading(false);
+        setBookings([]);
 
+        toast.error(
+          data.message ||
+          "Failed to load bookings"
+        );
       }
-    };
+
+
+    } catch (error) {
+
+      console.error(
+        "GET MY BOOKINGS ERROR:",
+        error.response?.status,
+        error.response?.data ||
+        error.message
+      );
+
+
+      setBookings([]);
+
+
+      toast.error(
+        error.response?.data?.message ||
+        error.message ||
+        "Failed to load bookings"
+      );
+
+
+    } finally {
+
+      setLoading(false);
+
+    }
+  };
 
 
   // ======================================================
@@ -185,7 +186,6 @@ function MyBookings() {
     return (
       <Loading />
     );
-
   }
 
 
@@ -207,6 +207,10 @@ function MyBookings() {
       "
     >
 
+      {/* =================================================
+          BACKGROUND BLUR
+      ================================================= */}
+
       <BlurCode
         top="100px"
         left="100px"
@@ -222,6 +226,10 @@ function MyBookings() {
 
       </div>
 
+
+      {/* =================================================
+          TITLE
+      ================================================= */}
 
       <h1
         className="
@@ -259,13 +267,34 @@ function MyBookings() {
       {bookings.map(
         (item) => {
 
+          // ===============================================
+          // MOVIE
+          // ===============================================
+
           const movie =
             item?.show?.movie;
 
 
+          // ===============================================
+          // BOOKED SEATS
+          // ===============================================
+
           const bookedSeats =
             item?.bookedSeats ||
             [];
+
+
+          // ===============================================
+          // PAYMENT STATUS
+          // ===============================================
+
+          const isPaid =
+            Boolean(item?.isPaid);
+
+
+          const paymentLink =
+            item?.paymentLink ||
+            "";
 
 
           return (
@@ -291,8 +320,9 @@ function MyBookings() {
               "
             >
 
+
               {/* =========================================
-                  MOVIE
+                  MOVIE INFORMATION
               ========================================= */}
 
               <div
@@ -303,11 +333,17 @@ function MyBookings() {
                 "
               >
 
+                {/* =======================================
+                    POSTER
+                ======================================= */}
+
                 <img
 
                   src={
-                    image_base_url +
                     movie?.poster_path
+                      ? image_base_url +
+                        movie.poster_path
+                      : ""
                   }
 
                   className="
@@ -327,6 +363,10 @@ function MyBookings() {
                 />
 
 
+                {/* =======================================
+                    MOVIE DETAILS
+                ======================================= */}
+
                 <div
                   className="
                     flex
@@ -342,7 +382,8 @@ function MyBookings() {
                     "
                   >
                     {
-                      movie?.title
+                      movie?.title ||
+                      "Unknown Movie"
                     }
                   </p>
 
@@ -353,9 +394,13 @@ function MyBookings() {
                       text-sm
                     "
                   >
+
                     {
                       movie?.runtime
-                    } min
+                        ? `${movie.runtime} min`
+                        : ""
+                    }
+
                   </p>
 
 
@@ -366,15 +411,19 @@ function MyBookings() {
                       mt-auto
                     "
                   >
+
                     {
                       item?.show
                         ?.showDateTime
+
                         ? dateFormat(
                             item.show
                               .showDateTime
                           )
+
                         : ""
                     }
+
                   </p>
 
                 </div>
@@ -397,6 +446,11 @@ function MyBookings() {
                 "
               >
 
+
+                {/* =======================================
+                    PRICE + PAYMENT
+                ======================================= */}
+
                 <div
                   className="
                     flex
@@ -404,6 +458,10 @@ function MyBookings() {
                     gap-4
                   "
                 >
+
+                  {/* =====================================
+                      PRICE
+                  ===================================== */}
 
                   <p
                     className="
@@ -413,14 +471,22 @@ function MyBookings() {
                     "
                   >
                     {currency}{" "}
-                    {item.amount}
+                    {item?.amount ?? 0}
                   </p>
 
 
-                  {!item.isPaid && (
+                  {/* =====================================
+                      NOT PAID
+                  ===================================== */}
 
-                    <button
-                      type="button"
+                  {!isPaid &&
+                    paymentLink && (
+
+                    <a
+
+                      href={
+                        paymentLink
+                      }
 
                       className="
                         bg-primary
@@ -432,20 +498,53 @@ function MyBookings() {
                         font-medium
                         cursor-pointer
                       "
+
                     >
                       Pay Now
-                    </button>
+                    </a>
+
+                  )}
+
+
+                  {/* =====================================
+                      PAID
+                  ===================================== */}
+
+                  {isPaid && (
+
+                    <span
+                      className="
+                        px-4
+                        py-1.5
+                        mb-3
+                        text-sm
+                        rounded-full
+                        font-medium
+                        border
+                        border-primary/30
+                      "
+                    >
+                      Paid
+                    </span>
 
                   )}
 
                 </div>
 
 
+                {/* =======================================
+                    TICKET INFORMATION
+                ======================================= */}
+
                 <div
                   className="
                     text-sm
                   "
                 >
+
+                  {/* =====================================
+                      TOTAL TICKETS
+                  ===================================== */}
 
                   <p>
 
@@ -460,6 +559,10 @@ function MyBookings() {
                   </p>
 
 
+                  {/* =====================================
+                      SEAT NUMBERS
+                  ===================================== */}
+
                   <p>
 
                     <span>
@@ -467,9 +570,11 @@ function MyBookings() {
                     </span>
 
                     {
-                      bookedSeats.join(
-                        ", "
-                      )
+                      bookedSeats.length > 0
+                        ? bookedSeats.join(
+                            ", "
+                          )
+                        : "N/A"
                     }
 
                   </p>

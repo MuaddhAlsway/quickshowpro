@@ -6,22 +6,49 @@ import connectDB from "./configs/db.js";
 
 import { clerkMiddleware } from "@clerk/express";
 
-import { functions, inngest } from "./inngest/index.js";
+import {
+  functions,
+  inngest,
+} from "./inngest/index.js";
+
 import { serve } from "inngest/express";
 
 import showRouter from "./routes/showRoutes.js";
 import bookingRouter from "./routes/bookingRoutes.js";
 import adminRouter from "./routes/adminRouter.js";
 import userRouter from "./routes/userRoutes.js";
-import { stripeWebhooks } from "./Controller/stripeWebhook.js";
+
+import {
+  stripeWebhooks,
+} from "./Controller/stripeWebhook.js";
+
 
 const app = express();
 
-const port = process.env.PORT || 3000;
+const port =
+  process.env.PORT || 3000;
 
-// Stripe Webhooks Route
-app.use('/api/stripe', express.raw({type: 'application/json'}), stripeWebhooks)
-const isVercel = !!process.env.VERCEL;
+const isVercel =
+  !!process.env.VERCEL;
+
+
+// ======================================================
+// STRIPE WEBHOOK
+//
+// IMPORTANT:
+// Must be BEFORE express.json()
+//
+// Stripe signature verification requires
+// the original RAW request body.
+// ======================================================
+
+app.post(
+  "/api/stripe",
+  express.raw({
+    type: "application/json",
+  }),
+  stripeWebhooks
+);
 
 
 // ======================================================
@@ -29,8 +56,11 @@ const isVercel = !!process.env.VERCEL;
 // ======================================================
 
 try {
+
   await connectDB();
+
 } catch (error) {
+
   if (!isVercel) {
     throw error;
   }
@@ -46,32 +76,45 @@ try {
 // GLOBAL MIDDLEWARE
 // ======================================================
 
-app.use(express.json());
+app.use(
+  express.json()
+);
 
-app.use(cors());
+app.use(
+  cors()
+);
 
 
 // ======================================================
 // PUBLIC TEST ROUTE
 // ======================================================
 
-app.get("/api/test-public", (req, res) => {
-  res.json({
-    message: "test-public OK",
-    clerkProtected: false,
-  });
-});
+app.get(
+  "/api/test-public",
+  (req, res) => {
+
+    res.json({
+      message:
+        "test-public OK",
+
+      clerkProtected:
+        false,
+    });
+  }
+);
 
 
 // ======================================================
 // INNGEST
-// Keep before Clerk middleware
 // ======================================================
 
 app.use(
   "/api/inngest",
+
   serve({
-    client: inngest,
+    client:
+      inngest,
+
     functions,
   })
 );
@@ -81,29 +124,49 @@ app.use(
 // CLERK
 // ======================================================
 
-app.use(clerkMiddleware());
+app.use(
+  clerkMiddleware()
+);
 
 
 // ======================================================
 // ROOT
 // ======================================================
 
-app.get("/", (req, res) => {
-  res.send("Server is Live!");
-});
+app.get(
+  "/",
+  (req, res) => {
+
+    res.send(
+      "Server is Live!"
+    );
+  }
+);
 
 
 // ======================================================
 // API ROUTES
 // ======================================================
 
-app.use("/api/show", showRouter);
+app.use(
+  "/api/show",
+  showRouter
+);
 
-app.use("/api/booking", bookingRouter);
+app.use(
+  "/api/booking",
+  bookingRouter
+);
 
-app.use("/api/admin", adminRouter);
+app.use(
+  "/api/admin",
+  adminRouter
+);
 
-app.use("/api/user", userRouter);
+app.use(
+  "/api/user",
+  userRouter
+);
 
 
 // ======================================================
@@ -111,11 +174,16 @@ app.use("/api/user", userRouter);
 // ======================================================
 
 if (!isVercel) {
-  app.listen(port, () => {
-    console.log(
-      `Server listening at http://localhost:${port}`
-    );
-  });
+
+  app.listen(
+    port,
+    () => {
+
+      console.log(
+        `Server listening at http://localhost:${port}`
+      );
+    }
+  );
 }
 
 
